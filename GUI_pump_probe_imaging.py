@@ -1,7 +1,6 @@
 import sys
 import os
-from PyQt6.QtWidgets import QApplication, QWidget, QGraphicsScene, QFileDialog, QMessageBox
-from PyQt6 import QtGui
+from PyQt6.QtWidgets import QApplication, QWidget, QGraphicsScene, QFileDialog
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import QTimer, Qt
 import tkinter
@@ -15,6 +14,7 @@ import Newport_XPS_class as DelayLine_class
 import micromanager_class
 import time
 import pyqtgraph as pg
+from pyqtgraph.graphicsItems.ROI import ROI
 
 uiclass, baseclass = pg.Qt.loadUiType("interface.ui")
 
@@ -132,24 +132,30 @@ class MainForm(QWidget):
         delay['start'] = float(self.ui.DelayLineMin.text())
         delay['stop'] = float(self.ui.DelayLineMax.text())
         delay['step'] = float(self.ui.DelayLineStep.text()) * np.sign(delay['stop'] - delay['start'])
-        arrayoftime = np.arange(delay['start'], delay['stop'] + delay['step'], delay['step'])
+        if delay['start'] == delay['stop']:
+            arrayoftime = np.array(delay['start'])
+        else:
+            arrayoftime = np.arange(delay['start'], delay['stop'] + delay['step'], delay['step'])
+
 
         if self.ui.additionalDL_checkBox.isChecked():
             seq = self.ui.additionalDLseq_Edit.text()
-            temp = re.findall(r"[-+]?(?:\d*\.\d+)", seq)
+            temp = re.findall(r"[-+]?\d*\.\d+|\d+", seq)
             res = list(map(float, temp))
             begintimearray = np.arange(res[0], res[2] + res[1], res[1])
             arrayoftime = np.unique(np.concatenate([begintimearray, arrayoftime])) #concatenate and exclude doubled items
-
 
         power = {}
         power['start'] = float(self.ui.PWRmin.text())
         power['stop'] = float(self.ui.PWRmax.text())
         power['step'] = float(self.ui.PWRstep.text()) * np.sign(power['stop'] - power['start'])
-        arrayofpwr = np.arange(power['start'], power['stop'] + power['step'], power['step'])
+        if power['start'] == power['stop']:
+            arrayofpwr = np.array(power['start'])
+        else:
+            arrayofpwr = np.arange(power['start'], power['stop'] + power['step'], power['step'])
 
         all_steps = len(arrayoftime)*len(arrayofpwr)
-        iter = 0
+        counter = 0
         for pwr_index, pwr_position in enumerate(arrayofpwr):
             if not self.isStop:
                 self.PWR_move(pwr_position)
@@ -159,19 +165,20 @@ class MainForm(QWidget):
                         self.take_images()
                         delay_pwr = f"pwr_{pwr_position}_delay_{delay_position}"
                         self.save_images(delay_pwr)
-                        iter += 1
-                        progress = int(100*iter / all_steps)
+                        counter += 1
+                        progress = int(100*counter / all_steps)
                         self.ui.progressBar.setValue(progress)
                         self.repaint()
                         self.update()
                         # save first reference image any case
-                        if iter == 1:
+                        if counter == 1:
                             folder = self.ui.folder_edit.text()
                             filename = self.ui.FileName.text()
-                            fullname = os.path.join(folder, filename)
-                            self.save_snap(self.reference_img, fullname=fullname+".dat")
-                            self.ui.referenceImage_view.export(fullname + ".png")
-
+                            fullpath = os.path.join(folder, filename)
+                            self.save_snap(self.reference_img, fullname=fullpath+".dat")
+                            self.ui.referenceImage_view.export(fullpath + ".png")
+                            fullpath = os.path.join(folder, "protocol_"+filename)
+                            self.save_mainwindow_screenshot(fullpath + ".png")
 
         messagebox.showinfo("Done", "Measurements are done.")
 
@@ -234,7 +241,7 @@ class MainForm(QWidget):
         curr_pumpPWR = self.pumpPWR.get_position()
         self.pumpPWR.move_to(position)
         # check the position accuracy
-        while abs(curr_pumpPWR - float(position)) > 0.05:
+        while abs(curr_pumpPWR - float(position)) > 0.001:
             curr_pumpPWR = self.pumpPWR.get_position()
             time.sleep(0.05)
         self.ui.curr_pumpPWRlabel.setText(f"Current PWR: {curr_pumpPWR}deg")
@@ -244,11 +251,21 @@ class MainForm(QWidget):
     def show_folder_dialog(self):
         folder_path = QFileDialog.getExistingDirectory(self, "Select Directory")
         if folder_path:
-            self.ui.folder_edit.setText(folder_path) + "\\"
+            self.ui.folder_edit.setText(folder_path+"/")
             self.folder_path = self.ui.folder_edit.text()
 
     def update_frame(self, frame, widget):
-        widget.setImage(frame.T, autoRange=False)
+        image_data = frame.T
+        # Get the number of rows and columns
+        num_rows, num_columns = image_data.shape
+        # Get the central subarray
+        central_subarray = image_data[num_rows//4: num_rows*3//4, num_columns//4: num_columns*3//4]
+        # Compute the maximum and minimum values
+        max_value = np.max(central_subarray)
+        min_value = np.min(central_subarray)
+        # View image
+        widget.setImage(image_data)
+        widget.setLevels(min_value, max_value)  # Set min_value and max_value according to your desired range
         widget.show()
 
     def save_snap(self, image, fullname, format='%d'):
@@ -288,12 +305,6 @@ class MainForm(QWidget):
             fullname = os.path.join(folder, filename)
             self.save_snap(self.reference_img, fullname=fullname)
             # save screenshot
-            # # Create a QPixmap with the size of the viewport
-            # pixmap = QtGui.QPixmap(self.ui.referenceImage_view.viewport().size())
-            # # Render the viewport (what's seen in the QGraphicsView) onto the pixmap
-            # self.ui.referenceImage_view.viewport().render(pixmap)
-            # # Save the pixmap as a new image file (e.g., "test.png")
-            # pixmap.save(fullname+".png")
             self.ui.referenceImage_view.export(fullname+".png")
 
         # save pumped image
@@ -305,12 +316,6 @@ class MainForm(QWidget):
             fullname = os.path.join(folder, filename)
             self.save_snap(self.pumped_img, fullname=fullname)
             # save screenshot
-            # Create a QPixmap with the size of the viewport
-            # pixmap = QtGui.QPixmap(self.ui.pumpedImage_view.viewport().size())
-            # # Render the viewport (what's seen in the QGraphicsView) onto the pixmap
-            # self.ui.pumpedImage_view.viewport().render(pixmap)
-            # # Save the pixmap as a new image file (e.g., "test.png")
-            # pixmap.save(fullname+".png")
             self.ui.pumpedImage_view.export(fullname + ".png")
 
         # save difference image
@@ -322,12 +327,6 @@ class MainForm(QWidget):
             fullname = os.path.join(folder, filename)
             self.save_snap(self.difference_img, fullname=fullname)
             # save screenshot
-            # Create a QPixmap with the size of the viewport
-            # pixmap = QtGui.QPixmap(self.ui.differenceImage_view.viewport().size())
-            # # Render the viewport (what's seen in the QGraphicsView) onto the pixmap
-            # self.ui.differenceImage_view.viewport().render(pixmap)
-            # # Save the pixmap as a new image file (e.g., "test.png")
-            # pixmap.save(fullname + ".png")
             self.ui.differenceImage_view.export(fullname + ".png")
 
          # save pumped image
@@ -339,14 +338,16 @@ class MainForm(QWidget):
             fullname = os.path.join(folder, filename)
             self.save_snap(self.norm_img,  fullname=fullname, format="%.5f")
             # save screenshot
-            # Create a QPixmap with the size of the viewport
-            # pixmap = QtGui.QPixmap(self.ui.normalizedImage_view.viewport().size())
-            # # Render the viewport (what's seen in the QGraphicsView) onto the pixmap
-            # self.ui.normalizedImage_view.viewport().render(pixmap)
-            # # Save the pixmap as a new image file (e.g., "test.png")
-            # pixmap.save(fullname + ".png"
             self.ui.normalizedImage_view.export(fullname + ".png")
         return
+
+    def save_mainwindow_screenshot(self, fullpath):
+        # Get the primary screen
+        screen = QApplication.primaryScreen()
+        # Capture the entire main window
+        pixmap = screen.grabWindow(self.winId())
+        # Save the screenshot to a file
+        pixmap.save(fullpath, 'png')
 
 
 if __name__ == '__main__':

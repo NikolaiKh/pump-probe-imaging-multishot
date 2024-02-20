@@ -18,13 +18,13 @@
     <rect>
      <x>11</x>
      <y>181</y>
-     <width>381</width>
+     <width>401</width>
      <height>25</height>
     </rect>
    </property>
    <property name="font">
     <font>
-     <pointsize>12</pointsize>
+     <pointsize>10</pointsize>
     </font>
    </property>
    <property name="text">
@@ -91,15 +91,15 @@
   <widget class="QPushButton" name="folderButton">
    <property name="geometry">
     <rect>
-     <x>400</x>
+     <x>420</x>
      <y>180</y>
-     <width>151</width>
+     <width>131</width>
      <height>27</height>
     </rect>
    </property>
    <property name="font">
     <font>
-     <pointsize>12</pointsize>
+     <pointsize>11</pointsize>
     </font>
    </property>
    <property name="styleSheet">
@@ -601,7 +601,7 @@ background-color: rgb(255, 255, 127);</string>
        </font>
       </property>
       <property name="text">
-       <string>20</string>
+       <string>10</string>
       </property>
       <property name="alignment">
        <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
@@ -661,7 +661,7 @@ background-color: rgb(255, 255, 127);</string>
        </font>
       </property>
       <property name="text">
-       <string>10</string>
+       <string>20</string>
       </property>
       <property name="alignment">
        <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
