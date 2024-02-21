@@ -1,9 +1,10 @@
 import sys
 import os
 from PyQt6.QtWidgets import QApplication, QWidget, QGraphicsScene, QFileDialog
+from PyQt6.QtCore import QObject, QThread, QThreadPool, QRunnable, pyqtSlot, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import QTimer, Qt
-import tkinter
+import traceback, sys
 from tkinter import messagebox
 import qimage2ndarray
 import numpy as np
@@ -12,23 +13,90 @@ from interface import Ui_Form
 import Lockin_SR_class as Lockin_class
 import Newport_XPS_class as DelayLine_class
 import micromanager_class
+from multiprocessing.pool import ThreadPool
 import time
 import pyqtgraph as pg
-from pyqtgraph.graphicsItems.ROI import ROI
+import threading
+import queue
+
 
 uiclass, baseclass = pg.Qt.loadUiType("interface.ui")
+
+class WorkerSignals(QObject):
+    '''
+    Defines the signals available from a running worker thread.
+
+    Supported signals are:
+
+    finished
+        No data
+
+    error
+        tuple (exctype, value, traceback.format_exc() )
+
+    result
+        object data returned from processing, anything
+
+    '''
+    finished = pyqtSignal()
+    error = pyqtSignal(tuple)
+    result = pyqtSignal(object)
+
+
+class Worker(QRunnable):
+    # used for LIA and XPS initialization
+    '''
+    Worker thread for any function
+    Inherits from QRunnable to handler worker thread setup, signals and wrap-up.
+    :param callback: The function callback to run on this worker thread. Supplied args and
+                     kwargs will be passed through to the runner.
+    :type callback: function
+    :param args: Arguments to pass to the callback function
+    :param kwargs: Keywords to pass to the callback function
+
+    taken from https://www.pythonguis.com/tutorials/multithreading-pyqt-applications-qthreadpool/
+    '''
+
+    def __init__(self, fn, *args, **kwargs):
+        super(Worker, self).__init__()
+        # Store constructor arguments (re-used for processing)
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+        self.signals = WorkerSignals()
+
+    @pyqtSlot()
+    def run(self):
+        '''
+        Initialise the runner function with passed args, kwargs.
+        '''
+
+        # Retrieve args/kwargs here; and fire processing using them
+        try:
+            result = self.fn(
+                *self.args, **self.kwargs
+            )
+        except:
+            traceback.print_exc()
+            exctype, value = sys.exc_info()[:2]
+            self.signals.error.emit((exctype, value, traceback.format_exc()))
+        else:
+            self.signals.result.emit(result)  # Return the result of the processing
+        finally:
+            self.signals.finished.emit()  # Done
+
+
 
 class MainForm(QWidget):
     def __init__(self):
         super().__init__()
         # set parameters of GUI
         self.setWindowTitle('Imaging Pump Probe')
-        # self.setGeometry(100, 100, 1084, 761)
 
-        # Создаем экземпляр класса Ui_Form
+        # create an instance of Ui_Form
         self.ui = Ui_Form()
 
-        # Инициализируем интерфейс, передавая в него текущее окно
+        # initialization of GUI
         self.ui.setupUi(self)
 
         # plot blank images
@@ -41,20 +109,23 @@ class MainForm(QWidget):
         # camera initialization
         self.camera_init()
 
-
         # set functions for buttons
         self.ui.folderButton.clicked.connect(self.show_folder_dialog)
-        self.ui.connectLIAandXPSbutton.clicked.connect(self.connect_LIA_XPS)
+        self.ui.connectLIAandXPSbutton.clicked.connect(self.lia_xps_init)
         self.ui.StopButton.clicked.connect(self.stop_button)
-        self.ui.StartButton.clicked.connect(self.start_button)
+        self.ui.StartButton.clicked.connect(self.start_button_press)
         self.ui.TestButton.clicked.connect(self.test_button)
         self.ui.testImgButton.clicked.connect(self.get_test_img)
         # self.ui.pModeComboBox.currentTextChanged.connect(self.PModeComboBox_changed())
         # self.ui.binningComboBox.currentIndexChanged(self.binningComboBox_changed)
+
         # folder and file names
-        # self.ui.SanpName.editingFinished.connect(self.update_snap_name)
-        self.isStop = True
         self.folder_path = self.ui.folder_edit.text()
+        # variable for stopping main loop
+        self.isStop = True
+        # setup thread pool
+        self.threadpool = QThreadPool()
+        print("Multithreading with maximum %d threads" % self.threadpool.maxThreadCount())
 
     def camera_init(self):
         # camera connection
@@ -78,6 +149,12 @@ class MainForm(QWidget):
         index = binnings.index(bin)
         if index >= 0:
             self.ui.binningComboBox.setCurrentIndex(index)
+
+    def lia_xps_init(self):
+        # Pass the function to execute
+        worker = Worker(self.connect_LIA_XPS)  # Any other args, kwargs are passed to the run function
+        # Execute
+        self.threadpool.start(worker)
 
     def connect_LIA_XPS(self):
         # connect LIA
@@ -111,7 +188,13 @@ class MainForm(QWidget):
     def stop_button(self):
         self.isStop = True
 
-    def start_button(self):
+    def start_button_press(self):
+        # Pass the function to execute
+        worker = Worker(self.start_button_thread) # Any other args, kwargs are passed to the run function
+        # Execute
+        self.threadpool.start(worker)
+
+    def start_button_thread(self):
         # start main measurements
         if not hasattr(self, 'lia'):
             messagebox.showerror("Error", "Lock-in is not connected!")
@@ -136,7 +219,6 @@ class MainForm(QWidget):
             arrayoftime = np.array(delay['start'])
         else:
             arrayoftime = np.arange(delay['start'], delay['stop'] + delay['step'], delay['step'])
-
 
         if self.ui.additionalDL_checkBox.isChecked():
             seq = self.ui.additionalDLseq_Edit.text()
@@ -165,11 +247,6 @@ class MainForm(QWidget):
                         self.take_images()
                         delay_pwr = f"pwr_{pwr_position}_delay_{delay_position}"
                         self.save_images(delay_pwr)
-                        counter += 1
-                        progress = int(100*counter / all_steps)
-                        self.ui.progressBar.setValue(progress)
-                        self.repaint()
-                        self.update()
                         # save first reference image any case
                         if counter == 1:
                             folder = self.ui.folder_edit.text()
@@ -179,7 +256,11 @@ class MainForm(QWidget):
                             self.ui.referenceImage_view.export(fullpath + ".png")
                             fullpath = os.path.join(folder, "protocol_"+filename)
                             self.save_mainwindow_screenshot(fullpath + ".png")
-
+                        counter += 1
+                        progress = int(100 * counter / all_steps)
+                        self.ui.progressBar.setValue(progress)
+                        # self.repaint()
+                        # self.update()
         messagebox.showinfo("Done", "Measurements are done.")
 
     def test_button(self):
@@ -221,29 +302,75 @@ class MainForm(QWidget):
         self.camera.setExptime(int(self.ui.ExpTime.text()))
         self.camera.setBinning(self.ui.binningComboBox.currentText())
         self.camera.setGain(int(self.ui.gain_spinBox.text()))
-        # mode = self.ui.pModeComboBox.currentText()
-        # self.camera.setPMode(mode) # Normal mode closes the program
+        mode = self.ui.pModeComboBox.currentText()
+        self.camera.setPMode(mode) # Normal mode closes the program sometimes
 
     def delay_move(self, position):
         self.ui.currentDLposituionlabel.setText("Delay line is moving")
-        currDLposition = self.delay_line.get_position()
-        self.delay_line.move_to(position)
+        # try:
+        #     currDLposition = self.delay_line.get_position()
+        #     self.delay_line.move_to(position)
+        # except: # if XPS controller crashed
+        #     time.sleep(240)
+        #     self.connect_LIA_XPS()
         # check the position accuracy. 5e-4 mm = 3 fs for single delay stage
+        self.DL_setted = position
+        currDLposition = -1
         while abs(currDLposition - float(position)) > 0.0005:
-            currDLposition = self.delay_line.get_position()
-            time.sleep(0.05)
+            try:
+                self.delay_line.move_to(position)
+                time.sleep(0.05)
+                currDLposition = self.delay_line.get_position()
+            except:  # if XPS controller crashed
+                while True:
+                    time.sleep(30)
+                    try:
+                        self.ui.currentDLposituionlabel.setText("Reconnecting XPS")
+                        self.connect_LIA_XPS()
+                        self.pumpPWR.move_to(self.pumpPWR_setted)
+                        self.delay_line.move_to(position)
+                        break
+                    except:
+                        self.ui.currentDLposituionlabel.setText("Reconnecting XPS again")
+
         self.ui.currentDLposituionlabel.setText(f"Current delay pos: {currDLposition}mm")
         self.ui.currentDLposituionlabel.repaint()
         self.ui.currentDLposituionlabel.update()
 
     def PWR_move(self, position):
         self.ui.curr_pumpPWRlabel.setText("PWR is moving")
-        curr_pumpPWR = self.pumpPWR.get_position()
-        self.pumpPWR.move_to(position)
+        # while True:
+        #     try:
+        #         self.pumpPWR.move_to(position)
+        #         break
+        #     except: # if XPS controller crashed
+        #         time.sleep(10)
+        #         try:
+        #             print("Trying reconnect XPS")
+        #             self.connect_LIA_XPS()
+        #             break
+        #         except:
+        #             print("Trying reconnect XPS again")
         # check the position accuracy
+        self.pumpPWR_setted = position
+        curr_pumpPWR = -400
         while abs(curr_pumpPWR - float(position)) > 0.001:
-            curr_pumpPWR = self.pumpPWR.get_position()
-            time.sleep(0.05)
+            try:
+                self.pumpPWR.move_to(position)
+                time.sleep(0.05)
+                curr_pumpPWR = self.pumpPWR.get_position()
+            except:  # if XPS controller crashed
+                while True:
+                    time.sleep(30)
+                    try:
+                        self.ui.curr_pumpPWRlabel.setText("Reconnecting XPS")
+                        self.connect_LIA_XPS()
+                        self.pumpPWR.move_to(position)
+                        self.delay_line.move_to(self.DL_setted)
+                        break
+                    except:
+                        self.ui.curr_pumpPWRlabel.setText("Reconnecting XPS again")
+
         self.ui.curr_pumpPWRlabel.setText(f"Current PWR: {curr_pumpPWR}deg")
         self.ui.curr_pumpPWRlabel.repaint()
         self.ui.curr_pumpPWRlabel.update()
