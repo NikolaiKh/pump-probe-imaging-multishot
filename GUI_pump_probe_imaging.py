@@ -326,7 +326,7 @@ class MainForm(QWidget):
                     time.sleep(30)
                     try:
                         self.ui.currentDLposituionlabel.setText("Reconnecting XPS")
-                        self.connect_LIA_XPS()
+                        # self.connect_LIA_XPS()
                         self.pumpPWR.move_to(self.pumpPWR_setted)
                         self.delay_line.move_to(position)
                         break
@@ -364,7 +364,7 @@ class MainForm(QWidget):
                     time.sleep(30)
                     try:
                         self.ui.curr_pumpPWRlabel.setText("Reconnecting XPS")
-                        self.connect_LIA_XPS()
+                        # self.connect_LIA_XPS()
                         self.pumpPWR.move_to(position)
                         self.delay_line.move_to(self.DL_setted)
                         break
