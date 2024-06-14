@@ -6,3 +6,5 @@ Tested with Teledyne Retiga R3 camera on Win10 (Win7 didn't take images with mmc
 GUI is made with QtDesigner and converted to interface.py with ChatGPT-made program Qt_convertor_ui_to_py.py.
 
 Camera, shutter and laser are not synchronized!!! It could be a problem at short explosure times (few ms). I used it with 8 sec exp time, SHG images in antiferromagnet. 
+
+pyqtgraph is used for fast images show: https://stackoverflow.com/questions/40126176/fast-live-plotting-in-matplotlib-pyplot 
