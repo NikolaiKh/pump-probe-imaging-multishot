@@ -1,5 +1,6 @@
 from newportxps import NewportXPS
 import time
+import datetime
 
 
 class DelayLine:
@@ -31,7 +32,7 @@ class DelayLine:
                     print("Reconnecting XPS")
                     self.init()
                     self.myxps.move_stage(self.controller, position)
-                    print(f"XPS {self.group} reconnected")
+                    self.show_message(f"XPS {self.group} reconnected")
                     break
                 except:
                     print("Reconnecting XPS again")
@@ -49,11 +50,15 @@ class DelayLine:
                     self.init()
                     self.move_to(self.position)
                     pos = self.myxps.get_stage_position(positioner)
-                    print(f"XPS {self.group} reconnected")
+                    self.show_message(f": XPS {self.group} reconnected")
                     break
                 except:
                     print("Reconnecting XPS again")
         return pos
+
+    def show_message(self, message):
+        now = datetime.datetime.now()
+        print(f"{now}:{message}")
 
 
 if __name__ == "__main__":
@@ -67,6 +72,14 @@ if __name__ == "__main__":
     # Now we will check if the DelayLine class works:
     controller = 'GROUP1.POSITIONER'
     delay_line = DelayLine(controller)
-    for position in range(0, 50, 5): # in mm
-        delay_line.move_to(position)
-        print(delay_line.get_position())
+    controller = 'GROUP3.POSITIONER'
+    power = DelayLine(controller)
+    counter = 0
+    while counter < 500:
+        for position in range(0, 90, 1): # in mm
+            delay_line.move_to(position)
+            power.move_to(position)
+        counter = counter+1
+        print(f"cycles finished: {counter}")
+    delay_line.show_message("all cycles finished")
+

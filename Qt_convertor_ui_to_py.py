@@ -2,9 +2,9 @@ import os
 import subprocess
 
 def convert_ui_to_py(ui_file):
-    # Убедитесь, что файл существует
+    # is file exist?
     if not os.path.exists(ui_file):
-        print(f"Файл '{ui_file}' не найден.")
+        print(f"File '{ui_file}' is not found.")
         return
 
     # Извлеките имя файла без расширения
@@ -13,12 +13,12 @@ def convert_ui_to_py(ui_file):
     # Определите имя файла .py для создания
     py_file = base_name + ".py"
 
-    # Вызовите pyuic5 через subprocess
+    # Call pyuic6 through subprocess
     try:
         subprocess.run(["pyuic6", "-o", py_file, ui_file], check=True)
-        print(f"Файл '{ui_file}' успешно конвертирован в '{py_file}'.")
+        print(f"File '{ui_file}' is converted to '{py_file}'.")
     except subprocess.CalledProcessError:
-        print(f"Ошибка при конвертации файла '{ui_file}'.")
+        print(f"Error during convertion of '{ui_file}'.")
 
 if __name__ == "__main__":
     ui_file = "interface.ui"  # Путь к вашему файлу .ui

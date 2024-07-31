@@ -1,87 +1,163 @@
 import sys
 import os
-from PyQt6.QtWidgets import QApplication, QWidget, QGraphicsScene, QFileDialog
-from PyQt6.QtGui import QPixmap, QImage
-from PyQt6.QtCore import QTimer, Qt
-import tkinter
+from pathlib import Path
+from PyQt5.QtWidgets import QApplication, QWidget, QGraphicsScene, QFileDialog
+from PyQt5.QtCore import QObject, QThreadPool, QRunnable, pyqtSlot, pyqtSignal
+import traceback
 from tkinter import messagebox
-import qimage2ndarray
 import numpy as np
 import re
 from interface import Ui_Form
 import Lockin_SR_class as Lockin_class
 import Newport_XPS_class as DelayLine_class
-import micromanager_class
+# import micromanager_class
+import pycromanager_class
 import time
 import pyqtgraph as pg
-from pyqtgraph.graphicsItems.ROI import ROI
+import Lakeshore_class as temperature_controller
+
 
 uiclass, baseclass = pg.Qt.loadUiType("interface.ui")
+
+
+# 2 next classes for multithreading
+
+class WorkerSignals(QObject):
+    '''
+    Defines the signals available from a running worker thread.
+
+    Supported signals are:
+
+    finished
+        No data
+
+    error
+        tuple (exctype, value, traceback.format_exc() )
+
+    result
+        object data returned from processing, anything
+
+    '''
+    finished = pyqtSignal()
+    error = pyqtSignal(tuple)
+    result = pyqtSignal(object)
+
+
+class Worker(QRunnable):
+    # used for LIA and XPS initialization
+    '''
+    Worker thread for any function
+    Inherits from QRunnable to handler worker thread setup, signals and wrap-up.
+    :param callback: The function callback to run on this worker thread. Supplied args and
+                     kwargs will be passed through to the runner.
+    :type callback: function
+    :param args: Arguments to pass to the callback function
+    :param kwargs: Keywords to pass to the callback function
+
+    taken from https://www.pythonguis.com/tutorials/multithreading-pyqt-applications-qthreadpool/
+    '''
+
+    def __init__(self, fn, *args, **kwargs):
+        super(Worker, self).__init__()
+        # Store constructor arguments (re-used for processing)
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+        self.signals = WorkerSignals()
+
+    @pyqtSlot()
+    def run(self):
+        '''
+        Initialise the runner function with passed args, kwargs.
+        '''
+
+        # Retrieve args/kwargs here; and fire processing using them
+        try:
+            result = self.fn(
+                *self.args, **self.kwargs
+            )
+        except:
+            traceback.print_exc()
+            exctype, value = sys.exc_info()[:2]
+            self.signals.error.emit((exctype, value, traceback.format_exc()))
+        else:
+            self.signals.result.emit(result)  # Return the result of the processing
+        finally:
+            self.signals.finished.emit()  # Done
+
 
 class MainForm(QWidget):
     def __init__(self):
         super().__init__()
         # set parameters of GUI
         self.setWindowTitle('Imaging Pump Probe')
-        # self.setGeometry(100, 100, 1084, 761)
 
-        # Создаем экземпляр класса Ui_Form
+        # create an instance of Ui_Form
         self.ui = Ui_Form()
 
-        # Инициализируем интерфейс, передавая в него текущее окно
+        # initialization of GUI
         self.ui.setupUi(self)
 
         # plot blank images
-        self.ui.plotWidget.ui.histogram.hide()
-        self.ui.plotWidget.ui.roiBtn.hide()
-        self.ui.plotWidget.ui.menuBtn.hide()
+        # self.ui.plotWidget.ui.histogram.hide()
+        # self.ui.plotWidget.ui.roiBtn.hide()
+        # self.ui.plotWidget.ui.menuBtn.hide()
         self.scene = QGraphicsScene()
         self.show()
 
         # camera initialization
         self.camera_init()
 
-
         # set functions for buttons
         self.ui.folderButton.clicked.connect(self.show_folder_dialog)
-        self.ui.connectLIAandXPSbutton.clicked.connect(self.connect_LIA_XPS)
+        self.ui.connectLIAandXPSbutton.clicked.connect(self.lia_xps_init)
         self.ui.StopButton.clicked.connect(self.stop_button)
-        self.ui.StartButton.clicked.connect(self.start_button)
+        self.ui.StartButton.clicked.connect(self.start_button_press)
         self.ui.TestButton.clicked.connect(self.test_button)
-        self.ui.testImgButton.clicked.connect(self.get_test_img)
+        # self.ui.testImgButton.clicked.connect(self.get_test_img)
         # self.ui.pModeComboBox.currentTextChanged.connect(self.PModeComboBox_changed())
         # self.ui.binningComboBox.currentIndexChanged(self.binningComboBox_changed)
+
         # folder and file names
-        # self.ui.SanpName.editingFinished.connect(self.update_snap_name)
-        self.isStop = True
         self.folder_path = self.ui.folder_edit.text()
+        # variable for stopping main loop
+        self.isStop = True
+        # setup thread pool
+        self.threadpool = QThreadPool()
+        print("Multithreading with maximum %d threads" % self.threadpool.maxThreadCount())
 
     def camera_init(self):
         # camera connection
-        self.camera = micromanager_class.MMcamera()
+        self.camera = pycromanager_class.MMcamera()
         #set max sensetivity
-        self.camera.setMaxSens()
-        #get gain
-        gain = int(self.camera.getGain())
+        self.camera.set_MaxSens()
+        #get and set gains
+        gain = int(self.camera.get_gain())
         self.ui.gain_spinBox.setValue(gain)
         #get and set PModes to combobox
-        PModes = self.camera.getAllPModevalues()
+        PModes = self.camera.get_allPModevalues()
         self.ui.pModeComboBox.addItems(PModes)
-        pmode = self.camera.getPMode()
+        pmode = self.camera.get_PMode()
         index = PModes.index(pmode)
         if index >= 0:
             self.ui.pModeComboBox.setCurrentIndex(index)
         #get and set binnings to combobox
-        binnings = self.camera.getAllBinningvalues()
+        binnings = self.camera.get_allBinningvalues()
         self.ui.binningComboBox.addItems(binnings)
-        bin = self.camera.getBinning()
+        bin = self.camera.get_binning()
         index = binnings.index(bin)
         if index >= 0:
             self.ui.binningComboBox.setCurrentIndex(index)
 
+    def lia_xps_init(self):
+        # Pass the function to execute
+        worker = Worker(self.connect_LIA_XPS)  # Any other args, kwargs are passed to the run function
+        # Execute
+        self.threadpool.start(worker)
+
     def connect_LIA_XPS(self):
         # connect LIA
-        self.lockin_id = self.ui.LockIn.text() #set lock-in addres
+        self.lockin_id = self.ui.LockIn.text()  # set lock-in addres
         self.lia = Lockin_class.Lockin(self.lockin_id)
         self.ui.liaStatuslabel.setText(self.lia.state)
         #connect delay line
@@ -94,6 +170,12 @@ class MainForm(QWidget):
         self.getPumpPWR()
         self.ui.XPSStatuslabel.setText("XPS is connected")
 
+    def connect_temp_controller(self):
+        self.temp_controller = temperature_controller.Lakeshore(self.ui.TempController_SpinBox.text())
+        sensor = 'A'
+        self.ui.labelCurrentTemp.setText(f"Current temperature: {self.temp_controller.query_temp(sensor)}K")
+        self.ui.labelTempStaus.setText(self.temp_controller.state)
+
     def getDLposition(self):
         self.currDLposition = self.delay_line.get_position()
         self.ui.currentDLposituionlabel.setText(f"Current delay pos: {self.currDLposition} mm")
@@ -103,15 +185,21 @@ class MainForm(QWidget):
         self.ui.curr_pumpPWRlabel.setText(f"Current PWR: {self.curr_pumpPWR} deg")
 
     def PModeComboBox_changed(self):
-        self.camera.setPMode(str(self.ui.pModeComboBox.currentText()))
+        self.camera.set_PMode(str(self.ui.pModeComboBox.currentText()))
 
     def binningComboBox_changed(self):
-        self.camera.setBinning(str(self.ui.binningComboBox.currentText()))
+        self.camera.set_binning(str(self.ui.binningComboBox.currentText()))
 
     def stop_button(self):
         self.isStop = True
 
-    def start_button(self):
+    def start_button_press(self):
+        # Pass the function to execute
+        worker = Worker(self.start_button_thread) # Any other args, kwargs are passed to the run function
+        # Execute
+        self.threadpool.start(worker)
+
+    def start_button_thread(self):
         # start main measurements
         if not hasattr(self, 'lia'):
             messagebox.showerror("Error", "Lock-in is not connected!")
@@ -121,7 +209,7 @@ class MainForm(QWidget):
             messagebox.showerror("Error", "Delay line is not connected!")
             return
 
-        # main loop measurements
+        # prepare measurements
         self.isStop = False
         self.delay_move(self.ui.DelayLineMin.text())
         self.PWR_move(self.ui.PWRmin.text())
@@ -133,52 +221,90 @@ class MainForm(QWidget):
         delay['stop'] = float(self.ui.DelayLineMax.text())
         delay['step'] = float(self.ui.DelayLineStep.text()) * np.sign(delay['stop'] - delay['start'])
         if delay['start'] == delay['stop']:
-            arrayoftime = np.array(delay['start'])
+            arrayoftime = np.array([delay['start']])
         else:
             arrayoftime = np.arange(delay['start'], delay['stop'] + delay['step'], delay['step'])
 
-
         if self.ui.additionalDL_checkBox.isChecked():
             seq = self.ui.additionalDLseq_Edit.text()
-            temp = re.findall(r"[-+]?\d*\.\d+|\d+", seq)
-            res = list(map(float, temp))
+            substrings = seq.split(":")
+            res = list(map(float, substrings))
             begintimearray = np.arange(res[0], res[2] + res[1], res[1])
             arrayoftime = np.unique(np.concatenate([begintimearray, arrayoftime])) #concatenate and exclude doubled items
 
+        if self.ui.additionalDelay2_checkBox.isChecked():
+            seq = self.ui.additionalDelayseq2_Edit .text()
+            substrings = seq.split(":")
+            res = list(map(float, substrings))
+            begintimearray = np.arange(res[0], res[2] + res[1], res[1])
+            arrayoftime = np.unique(np.concatenate([begintimearray, arrayoftime])) #concatenate and exclude doubled items
+
+        # get array of temperatures
+        if self.ui.temperatureSeq_checkBox.isChecked():
+            self.connect_temp_controller()
+            seq = self.ui.additionalTempSeq_Edit.text()
+            substrings = seq.split(":")
+            res = list(map(float, substrings))
+            arrayofTemp = np.arange(res[0], res[2] + res[1], res[1], dtype=float)
+        else:
+            arrayofTemp = np.array([1])
+
+        # get array of power
         power = {}
         power['start'] = float(self.ui.PWRmin.text())
         power['stop'] = float(self.ui.PWRmax.text())
         power['step'] = float(self.ui.PWRstep.text()) * np.sign(power['stop'] - power['start'])
         if power['start'] == power['stop']:
-            arrayofpwr = np.array(power['start'])
+            arrayofpwr = np.array([power['start']])
         else:
             arrayofpwr = np.arange(power['start'], power['stop'] + power['step'], power['step'])
 
-        all_steps = len(arrayoftime)*len(arrayofpwr)
+        all_steps = len(arrayoftime)*len(arrayofpwr)*len(arrayofTemp)
         counter = 0
-        for pwr_index, pwr_position in enumerate(arrayofpwr):
+
+        # main loop of measurements
+        for temp_index, temp_position in enumerate(arrayofTemp):
+            # set the temperature
             if not self.isStop:
-                self.PWR_move(pwr_position)
-                for delay_index, delay_position in enumerate(arrayoftime):
+                if self.ui.temperatureSeq_checkBox.isChecked():
+                    self.temp_controller.set_setpoint(temp_position)
+                    time.sleep(2)
+                    tt = 0
+                    while tt < 10:  # check if temperature is stable
+                        time.sleep(2)
+                        curr_temp = float(self.temp_controller.query_temp('A'))
+                        print('Current temperature ', curr_temp, 'K')
+                        print('Set point is ', temp_position, 'K')
+                        if abs(curr_temp - temp_position) < 0.1:
+                            tt += 1
+
+                for pwr_index, pwr_position in enumerate(arrayofpwr):
+                    # set the power
                     if not self.isStop:
-                        self.delay_move(delay_position)
-                        self.take_images()
-                        delay_pwr = f"pwr_{pwr_position}_delay_{delay_position}"
-                        self.save_images(delay_pwr)
-                        counter += 1
-                        progress = int(100*counter / all_steps)
-                        self.ui.progressBar.setValue(progress)
-                        self.repaint()
-                        self.update()
-                        # save first reference image any case
-                        if counter == 1:
-                            folder = self.ui.folder_edit.text()
-                            filename = self.ui.FileName.text()
-                            fullpath = os.path.join(folder, filename)
-                            self.save_snap(self.reference_img, fullname=fullpath+".dat")
-                            self.ui.referenceImage_view.export(fullpath + ".png")
-                            fullpath = os.path.join(folder, "protocol_"+filename)
-                            self.save_mainwindow_screenshot(fullpath + ".png")
+                        self.PWR_move(pwr_position)
+
+                        for delay_index, delay_position in enumerate(arrayoftime):
+                            # set delay position
+                            if not self.isStop:
+                                self.delay_move(delay_position)
+                                self.take_images()
+                                if self.ui.temperatureSeq_checkBox.isChecked():
+                                    file_name = f"temp_{temp_position}\\pwr_{pwr_position}_delay_{delay_position}"
+                                else:
+                                    file_name = f"pwr_{pwr_position}_delay_{delay_position}"
+                                self.save_images(file_name)
+                                # save first reference image any case
+                                if counter == 1:
+                                    folder = self.ui.folder_edit.text()
+                                    filename = self.ui.FileName.text()
+                                    fullpath = os.path.join(folder, filename)
+                                    self.save_snap(self.reference_img, fullname=fullpath+".dat")
+                                    self.ui.referenceImage_view.export(fullpath + ".png")
+                                    fullpath = os.path.join(folder, "protocol_"+filename)
+                                    self.save_mainwindow_screenshot(fullpath + ".png")
+                                counter += 1
+                                progress = int(100 * counter / all_steps)
+                                self.ui.progressBar.setValue(progress)
 
         messagebox.showinfo("Done", "Measurements are done.")
 
@@ -191,11 +317,11 @@ class MainForm(QWidget):
     def take_images(self):
         aux = self.ui.ShutterOut.text()
         self.lia.set_aux(aux, 0) # close shutter
-        self.reference_img = self.camera.getImage()
+        self.reference_img = self.camera.get_image()
         self.update_frame(self.reference_img, self.ui.referenceImage_view)
         self.lia.set_aux(aux, 5) # open shutter
-        self.pumped_img = self.camera.getImage()
-        self.lia.set_aux(aux, 0) # open shutter
+        self.pumped_img = self.camera.get_image()
+        self.lia.set_aux(aux, 0) # close shutter
         self.update_frame(self.pumped_img, self.ui.pumpedImage_view)
         self.difference_img = self.pumped_img - self.reference_img
         a = self.difference_img.astype(float)
@@ -205,46 +331,47 @@ class MainForm(QWidget):
         self.update_frame(self.difference_img, self.ui.differenceImage_view)
         self.update_frame(self.norm_img, self.ui.normalizedImage_view)
 
-    def get_test_img(self):
-        self.set_camera_settings()
-        img = self.camera.getImage()
-        self.update_frame(img, self.ui.referenceImage_view)
-        #2D imaging
-        self.ui.plotWidget.setImage(img)
-        # saving
-        folder = self.ui.folder_edit.text()
-        filename = self.ui.FileName.text()
-        fullname = os.path.join(folder, filename)+".png"
-        self.ui.plotWidget.export(fullname)
+    # def get_test_img(self):
+    #     self.set_camera_settings()
+    #     img = self.camera.get_image()
+    #     self.update_frame(img, self.ui.referenceImage_view)
+    #     #2D imaging
+    #     self.ui.plotWidget.setImage(img)
+    #     # saving
+    #     folder = self.ui.folder_edit.text()
+    #     filename = self.ui.FileName.text()
+    #     fullname = os.path.join(folder, filename)+".png"
+    #     self.ui.plotWidget.export(fullname)
 
     def set_camera_settings(self):
-        self.camera.setExptime(int(self.ui.ExpTime.text()))
-        self.camera.setBinning(self.ui.binningComboBox.currentText())
-        self.camera.setGain(int(self.ui.gain_spinBox.text()))
-        # mode = self.ui.pModeComboBox.currentText()
-        # self.camera.setPMode(mode) # Normal mode closes the program
+        self.camera.set_exposure(int(self.ui.ExpTime.text()))
+        self.camera.set_binning(self.ui.binningComboBox.currentText())
+        self.camera.set_gain(int(self.ui.gain_spinBox.text()))
+        mode = self.ui.pModeComboBox.currentText()
+        self.camera.set_PMode(mode) # Normal mode closes the program sometimes
 
     def delay_move(self, position):
         self.ui.currentDLposituionlabel.setText("Delay line is moving")
-        currDLposition = self.delay_line.get_position()
-        self.delay_line.move_to(position)
-        # check the position accuracy. 5e-4 mm = 3 fs for single delay stage
+        self.DL_setted = position
+        currDLposition = -1
         while abs(currDLposition - float(position)) > 0.0005:
-            currDLposition = self.delay_line.get_position()
+            self.delay_line.move_to(position)
             time.sleep(0.05)
-        self.ui.currentDLposituionlabel.setText(f"Current delay pos: {currDLposition}mm")
+            currDLposition = self.delay_line.get_position()
+        self.ui.currentDLposituionlabel.setText(f"Current delay pos: {currDLposition:.4f}mm")
         self.ui.currentDLposituionlabel.repaint()
         self.ui.currentDLposituionlabel.update()
 
     def PWR_move(self, position):
         self.ui.curr_pumpPWRlabel.setText("PWR is moving")
-        curr_pumpPWR = self.pumpPWR.get_position()
-        self.pumpPWR.move_to(position)
         # check the position accuracy
+        self.pumpPWR_setted = position
+        curr_pumpPWR = -400
         while abs(curr_pumpPWR - float(position)) > 0.001:
+            self.pumpPWR.move_to(position)
+            time.sleep(0.1)
             curr_pumpPWR = self.pumpPWR.get_position()
-            time.sleep(0.05)
-        self.ui.curr_pumpPWRlabel.setText(f"Current PWR: {curr_pumpPWR}deg")
+        self.ui.curr_pumpPWRlabel.setText(f"Current PWR: {curr_pumpPWR:.2f}deg")
         self.ui.curr_pumpPWRlabel.repaint()
         self.ui.curr_pumpPWRlabel.update()
 
@@ -271,7 +398,6 @@ class MainForm(QWidget):
     def save_snap(self, image, fullname, format='%d'):
         # saving one image
         folder = self.ui.folder_edit.text()
-        # filename = self.ui.FileName.text()
         if not os.path.isdir(folder):
             messagebox.showerror("Error", "Folder does not exist!")
             return
@@ -288,6 +414,8 @@ class MainForm(QWidget):
             else:
                 self.isStop = True
         else:
+            dir_name = os.path.dirname(os.path.abspath(fullname))
+            Path(dir_name).mkdir(parents=True, exist_ok=True)
             with open(fullname, "w") as file:
                 np.savetxt(file, image, fmt=format)
                 # messagebox.showinfo("Save", "File saved successfully.")
