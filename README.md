@@ -8,3 +8,5 @@ GUI is made with QtDesigner and converted to interface.py with ChatGPT-made prog
 Camera, shutter and laser are not synchronized!!! It could be a problem at short explosure times (few ms). I used it with 8 sec exp time, SHG images in antiferromagnet. 
 
 pyqtgraph is used for fast images show: https://stackoverflow.com/questions/40126176/fast-live-plotting-in-matplotlib-pyplot 
+
+![protocol_4rdpump400nm_laserRepRate_500Hz](https://github.com/user-attachments/assets/3cd36656-b4a2-4fdb-b9b6-0f7f843350b7)
